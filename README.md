@@ -25,11 +25,11 @@ pip install image-sharpner
 
 
 Usage Example -
-import cv2
-from image_preprocessing  import image_sharpner
+---import cv2----
+----from image_prep import image_sharpner----
 
-img = cv2.imread("input.jpg")
-sharp = image_sharpner(img)
+----img = cv2.imread("input.jpg")---
+-----sharp = image_sharpner(img)
 
 
 
@@ -44,4 +44,5 @@ OpenCV
 
 
 License - MIT License
+
 

@@ -1,4 +1,4 @@
-Athor -
+Author -
 Md Istiak Tanvir (eruddro@gmail.com)
 Asma Akter (asmaul9377@gmail.com)
 
@@ -44,3 +44,4 @@ OpenCV
 
 
 License - MIT License
+

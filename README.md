@@ -23,6 +23,7 @@ Traditional sharpening filters often overshoot edges, create ringing artifacts, 
 Installation -
 pip install image-sharpner
 
+
 Usage Example -
 import cv2
 from image_preprocessing  import image_sharpner
@@ -39,6 +40,7 @@ Compatibility -
 Python 3.7+
 NumPy
 OpenCV
+
 
 
 License - MIT License

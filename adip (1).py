@@ -1,199 +1,161 @@
-
 import cv2
 import numpy as np
 
 # -----------------------------------------------------------
-# Utility Functions
+# I. Utility Functions
 # -----------------------------------------------------------
 
-def multi_frequency_decompose(I_float):
-    """Decompose image into Low, Mid, High frequency bands."""
-    # I_float must be float type
+def multi_frequency_decompose_corrected(I_float):
+    """
+    Decompose image into Low (L), Mid (M), High (H) frequency bands
+    such that L + M + H = I_float exactly. (Laplacian Pyramid style)
+    """
+    # Create Blurs
+    blur_small = cv2.GaussianBlur(I_float, (3, 3), 1)
+    blur_large = cv2.GaussianBlur(I_float, (9, 9), 2)
 
-    # Low Frequency (L): Large Gaussian Blur
-    I_blur_L = cv2.GaussianBlur(I_float, (9, 9), 2)
-    L = I_blur_L
-
-    # Mid Frequency (M): Small Blur Residual
-    I_blur_M = cv2.GaussianBlur(I_float, (3, 3), 1)
-    M = I_float - I_blur_M    # mid-frequency residual
-
-    # High Frequency (H): Large Blur Residual
-    H = I_float - I_blur_L  # high-frequency
+    # Define Bands
+    H = I_float - blur_small    # High: Fine details (Original - Small Blur)
+    M = blur_small - blur_large # Mid: Medium details (Small Blur - Large Blur)
+    L = blur_large              # Low: Base structure (Large Blur)
 
     return L, M, H
 
+def local_contrast(I_gray, k=3):
+    """Compute local contrast (absolute difference from local mean)."""
+    mean = cv2.blur(I_gray, (k, k))
+    contrast = np.abs(I_gray - mean)
+    return contrast
 
-def local_contrast(I_float, k=3):
-    """Compute local contrast using local variance."""
-    # Ensure conversion to single-channel (grayscale) for local feature extraction
-    # cv2.cvtColor expects 3-channel input to be 3D.
-    # We must ensure the input is float before splitting or converting.
-    if I_float.ndim == 3:
-        gray = cv2.cvtColor(I_float.astype(np.float32), cv2.COLOR_BGR2GRAY)
-    else:
-        gray = I_float.astype(np.float32)
-
-    mean = cv2.blur(gray, (k, k))
-    contrast = np.abs(gray - mean)
-    # Normalizing is essential as it is used in the alpha calculation
-    return contrast / (contrast.max() + 1e-6)
-
-
-def noise_estimation(I_float):
-    """Estimate noise using Laplacian variance."""
-    if I_float.ndim == 3:
-        # Convert to float32 for cvtColor, then to grayscale, then cast to float64
-        gray = cv2.cvtColor(I_float.astype(np.float32), cv2.COLOR_BGR2GRAY)
-        gray = gray.astype(np.float64)
-    else:
-        # If already grayscale, just ensure it's float64
-        gray = I_float.astype(np.float64)
-
-    # Laplacian is highly sensitive to noise/fine details
-    lap = cv2.Laplacian(gray, cv2.CV_64F)
+def noise_estimation(I_gray):
+    """Estimate noise using smoothed Laplacian magnitude."""
+    lap = cv2.Laplacian(I_gray, cv2.CV_64F)
     noise = np.abs(lap)
-    return noise / (noise.max() + 1e-6)
+    # Smooth the noise map slightly
+    noise = cv2.GaussianBlur(noise, (3,3), 1)
+    return noise
 
-
-def edge_strength(I_float):
-    """Compute edge strength using Sobel."""
-    if I_float.ndim == 3:
-        # Convert to float32 for cvtColor, then to grayscale, then cast to float64
-        gray = cv2.cvtColor(I_float.astype(np.float32), cv2.COLOR_BGR2GRAY)
-        gray = gray.astype(np.float64)
-    else:
-        # If already grayscale, just ensure it's float64
-        gray = I_float.astype(np.float64)
-
-    # Sobel for edge gradient
-    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+def edge_strength(I_gray):
+    """Compute edge strength using Sobel magnitude."""
+    gx = cv2.Sobel(I_gray, cv2.CV_64F, 1, 0, ksize=3)
+    gy = cv2.Sobel(I_gray, cv2.CV_64F, 0, 1, ksize=3)
     edge = np.sqrt(gx**2 + gy**2)
-    return edge / (edge.max() + 1e-6)
-
-
-def highpass(F):
-    """High-pass filter."""
-    # F is expected to be float
-    return F - cv2.GaussianBlur(F, (3, 3), 1)
-
+    return edge
 
 # -----------------------------------------------------------
-# Simple Color & Tone Adjustment
+# II. Advanced UIE Color Correction
 # -----------------------------------------------------------
 
-def color_tone_adjust(F):
-    """Simple color correction for underwater images."""
-    # Convert back to 8-bit for histogram equalization
+def color_tone_adjust_advanced(F):
+    """
+    Performs Red Channel Compensation, CLAHE for contrast, and Final White Balancing.
+    """
     F_8bit = np.clip(F, 0, 255).astype(np.uint8)
-
     b, g, r = cv2.split(F_8bit)
 
-    # Histogram equalization for ALL channels to boost contrast/color more uniformly
-    b_eq = cv2.equalizeHist(b)
-    g_eq = cv2.equalizeHist(g)
-    r_eq = cv2.equalizeHist(r)
+    # 1. RED CHANNEL COMPENSATION
+    # Boost R towards the average of G and B
+    avg_g = np.mean(g)
+    avg_b = np.mean(b)
+    target_r_avg = (avg_g + avg_b) / 2
+    gain_r = target_r_avg / (np.mean(r) + 1e-6)
 
-    F2 = cv2.merge([b_eq, g_eq, r_eq])
+    # Apply compensation with aggressive gain, but clip the gain maximum at 3.0
+    r_compensated = np.clip(r.astype(np.float64) * min(gain_r * 1.5, 2.50), 0, 255).astype(np.uint8)
+    F_compensated = cv2.merge((b, g, r_compensated))
 
-    # Bilateral filter for edge-preserving smoothing
-    F2 = cv2.bilateralFilter(F2, 7, 50, 50)
-    return F2
+    # 2. CLAHE on Luminance
+    lab = cv2.cvtColor(F_compensated, cv2.COLOR_BGR2LAB)
+    l, a, bb = cv2.split(lab)
 
+    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
+    l_eq = clahe.apply(l)
+
+    lab_eq = cv2.merge((l_eq, a, bb))
+    F_out = cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+
+    # 3. Final White Balancing (Gray World Assumption)
+    result_float = F_out.astype(np.float64)
+    # Correct way to get the mean values from cv2.mean()
+    avg_b_final, avg_g_final, avg_r_final, _ = cv2.mean(result_float)
+
+    avg_max = max(avg_b_final, avg_g_final, avg_r_final)
+
+    b_balanced = result_float[:, :, 0] * (avg_max / (avg_b_final + 1e-6))
+    g_balanced = result_float[:, :, 1] * (avg_max / (avg_g_final + 1e-6))
+    r_balanced = result_float[:, :, 2] * (avg_max / (avg_r_final + 1e-6))
+
+    F_final = cv2.merge((b_balanced, g_balanced, r_balanced))
+    F_final = np.clip(F_final, 0, 255).astype(np.uint8)
+    F_final = cv2.bilateralFilter(F_final, 7, 50, 50)
+
+    return np.clip(F_final, 0, 255).astype(np.uint8)
 
 # -----------------------------------------------------------
-# Main Sharpening Pipeline
+# III. Main Adaptive Sharpening Pipeline
 # -----------------------------------------------------------
 
-def adaptive_multi_frequency_sharpen(I, wL=0.3, wM=0.3, wH=0.4):
+def adaptive_multi_frequency_sharpen_advanced(I, wL=0.7, wM=0.5, wH=1.0):
 
-    # **Critical Fix 1: Convert to float for accurate arithmetic operations**
-    # Original image I is assumed to be np.uint8 (0-255)
     I_float = I.astype(np.float64)
 
-    # Step 1: Frequency Decomposition
-    L, M, H = multi_frequency_decompose(I_float)
+    # 1. Frequency Decomposition
+    L, M, H = multi_frequency_decompose_corrected(I_float)
 
-    # Step 2: Local contrast, noise, edge estimation
-    # These return single-channel (grayscale) float arrays
-    C = local_contrast(I_float)
-    N = noise_estimation(I_float)
-    E = edge_strength(I_float)
+    # 2. Grayscale Feature Extraction
+    gray = cv2.cvtColor(I_float.astype(np.float32), cv2.COLOR_BGR2GRAY).astype(np.float64)
+    C = local_contrast(gray)
+    N = noise_estimation(gray)
+    E = edge_strength(gray)
 
-    # Adaptive modulation factor α
-    # N must be non-zero (1e-6 added)
-    alpha = (C * E) / (N + 1e-6)
+    # 3. Adaptive Alpha Calculation (Stable and Clipped)
+    # alpha = (Contrast * Edge) / Noise
+    alpha = (C * E) / (N + 1e-5)
+    alpha = cv2.normalize(alpha, None, 0, 1.0, cv2.NORM_MINMAX)
 
-    # Smooth alpha (original code used a small sigma, which is fine)
-    alpha = cv2.GaussianBlur(alpha.astype(np.float32), (5, 5), 1)
-
-    # **Critical Fix 2: Ensure alpha is the same size as the frequency bands**
-    # Expand to 3 channels (Broadcasting rule)
+    # **Critical Stability Fix**: Clip alpha to prevent noise amplification
+    alpha = np.clip(alpha, 0.0, 0.8)
+    alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
     alpha3 = np.repeat(alpha[:, :, np.newaxis], 3, axis=2)
 
-    # Step 3: Adaptive Sharpening (L, M, H, alpha3 are all float/float64)
-    # Increased coefficients for sharpening to make the image clearer
-    L_s = L + 0.3 * alpha3 * highpass(L)
-    M_s = M + 0.7 * alpha3 * highpass(M)
-    H_s = H + 1.3 * alpha3 * highpass(H)
+    # 4. Frequency Sharpening Factors
+    # Mid-frequency (M) gets the strongest adaptive boost for structure/texture
+    sharp_factor_M = 1.0 + (2.5 * alpha3)
+    # High-frequency (H) gets a mild boost to limit noise
+    sharp_factor_H = 1.0 + (0.5 * alpha3)
 
-    # Step 4: Weighted Fusion
-    F = wL * L_s + wM * M_s + wH * H_s
+    L_s = L
+    M_s = M * sharp_factor_M
+    H_s = H * sharp_factor_H
 
-    # **Intermediate Step: Clipping and converting to uint8 is deferred**
-    # Only the final color adjust function handles the conversion to uint8
+    # 5. Weighted Fusion
+    F = (wL * L_s) + (wM * M_s) + (wH * H_s)
+    F = np.clip(F, 0, 255).astype(np.uint8)
 
-    # Step 5: Color tone correction
-    O = color_tone_adjust(F)
+    # 6. Post-processing Advanced UIE Color Correction
+    O = color_tone_adjust_advanced(F)
 
     return O
 
-
 # -----------------------------------------------------------
-# Example Usage
+# IV. Execution
 # -----------------------------------------------------------
 
 if __name__ == "__main__":
-    # 1. Load the image
-    image_path = "t1.jpg"
+    # **NOTE**: Change " to the actual path of your underwater image.
+    image_path = "im2.jpg"
     I = cv2.imread(image_path)
 
-    # **CRITICAL SAFETY CHECK: Check if the image was loaded successfully**
     if I is None:
-        print(f"ERROR: Could not read image at path: {image_path}")
-        print("Please ensure the file 'underwater.jpg' exists in the same directory.")
-        # Create a dummy dark image for failure case
-        I = np.zeros((100, 100, 3), dtype=np.uint8)
-        # Exit or use a dummy image, based on the need. Here, we exit.
+        print(f"ERROR: Image {image_path} not found.")
+        # Exit if image not found
         exit()
+    else:
+        print(f"Processing {image_path} with ADVANCED UIE & Sharpening...")
 
-    # 2. Process the image
-    print(f"Processing image: {image_path}...")
-    enhanced = adaptive_multi_frequency_sharpen(I)
+        # Run the full pipeline
+        enhanced = adaptive_multi_frequency_sharpen_advanced(I)
 
-    # 3. Save the result
-    cv2.imwrite("enhanced_output.jpg", enhanced)
-    print("Done! Enhanced image saved as 'enhanced_output.jpg'")
-
-
-
-
-
-
-
-
-
-
-
-
-
-# this for packge
-
-pip install image-sharpner
-
-import cv2
-from image_prep import image_sharpner
-
-img = cv2.imread("t1.jpg")
-sharp = image_sharpner(img)
+        output_name = f"enhanced_{image_path}"
+        cv2.imwrite(output_name, enhanced)
+        print(f"Done! Enhanced image saved as '{output_name}'")
